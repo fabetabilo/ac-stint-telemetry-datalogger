@@ -36,8 +36,8 @@ timer_slow = 0
 period_fast = 1.0 / float(UPDATE_FREQ)
 period_slow = UPDATE_SLOW_FREQ
 
-PACKET_TYPE = 2
-PACKET_TYPE_S = 3
+PKT_INFO = 1
+PKT_TELEMETRY = 2
 
 DRIVER_NAME = "Driver"
 CAR_MODEL = "UNKNOWN"
@@ -108,9 +108,20 @@ def get_nose_direction():
     except:
         return 0.0
 
+def send_udp(dict_payload):
+
+    global sock, SERVER_IP, SERVER_PORT
+
+    if sock:
+        try:
+            msg = json.dumps(dict_payload).encode('utf-8')
+            sock.sendto(msg, (SERVER_IP, SERVER_PORT))
+        except:
+            pass
+
 def send_telemetry():
     
-    global sock, radar_sys, SERVER_IP, SERVER_PORT
+    global sock, radar_sys
     
     try:
         
@@ -141,7 +152,7 @@ def send_telemetry():
             nearby_cars = radar_sys.get_nearby_cars(x, z)
 
         tl_payload = {
-            "type": PACKET_TYPE,
+            "type": PKT_TELEMETRY,
             "car": {
                 "position": position,
                 "rpm": rpm,
@@ -166,29 +177,23 @@ def send_telemetry():
             }
         }
         # ac.log("STINT: " + json.dumps(tl_payload, indent=2))
-
-        if sock:
-            msg = json.dumps(tl_payload).encode('utf-8')
-            sock.sendto(msg, (SERVER_IP, SERVER_PORT))
+        send_udp(tl_payload)
 
     except Exception as e:
         ac.log("STINT ERROR: TL " + str(e))
 
 def send_handshake():
     
-    global sock, SERVER_IP, SERVER_PORT, DRIVER_NAME, CAR_MODEL
+    global sock, DRIVER_NAME, CAR_MODEL
     
     try:
         s_payload = {
-            "type": PACKET_TYPE_S,
+            "type": PKT_INFO,
             "driver": DRIVER_NAME,
             "teamId": TEAM_ID,
             "car": CAR_MODEL
         }
-        
-        if sock:
-            msg = json.dumps(s_payload).encode('utf-8')
-            sock.sendto(msg, (SERVER_IP, SERVER_PORT))
+        send_udp(s_payload)
             
     except Exception as e:
         ac.log("Stint ERROR: HS " + str(e))
