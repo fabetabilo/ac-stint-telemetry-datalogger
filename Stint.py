@@ -29,7 +29,6 @@ UPDATE_SLOW_FREQ = 5 # 5s
 
 sock = None
 radar_sys = None
-lbl_status = 0
 
 timer_fast = 0
 timer_slow = 0
@@ -41,6 +40,7 @@ PKT_TELEMETRY = 2
 
 DRIVER_NAME = "Driver"
 CAR_MODEL = "UNKNOWN"
+CAR_NUMBER = "0"
 TEAM_ID = "DMG"
 
 RADAR_RANGE = 40.0 # 40m
@@ -92,6 +92,18 @@ def load_config():
     except Exception as e:
         ac.log("Stint ERROR: config.ini: " + str(e))
 
+def get_number_from_livery(car_model, skin_name):
+    try:
+        file_path = "content/cars/{}/skins/{}/ui_skin.json".format(car_model, skin_name)
+        
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                return str(data.get("number", ""))
+
+    except Exception:
+        return None
+    return None
 
 def get_nose_direction():
     try:
@@ -189,6 +201,7 @@ def send_handshake():
     try:
         s_payload = {
             "type": PKT_INFO,
+            "num": CAR_NUMBER,
             "driver": DRIVER_NAME,
             "teamId": TEAM_ID,
             "car": CAR_MODEL
@@ -200,7 +213,7 @@ def send_handshake():
 
 def acMain(ac_version):
 
-    global sock, lbl_status, radar_sys, DRIVER_NAME, CAR_MODEL
+    global sock, lbl_status, radar_sys, DRIVER_NAME, CAR_MODEL, CAR_NUMBER
     global RADAR_RANGE
     
     load_config()
@@ -220,10 +233,11 @@ def acMain(ac_version):
 
     appWindow = ac.newApp("Stint Logger")
     ac.setSize(appWindow, 200, 50)
-    ac.setPosition(lbl_status, 10, 25)
     
+    livery = ac.getCarSkin(0)
     DRIVER_NAME = ac.getDriverName(0)
     CAR_MODEL = ac.getCarName(0) or "UNKNOWN"
+    CAR_NUMBER = get_number_from_livery(CAR_MODEL, livery)
 
     ac.log("Stint sending telemetry data")
 
