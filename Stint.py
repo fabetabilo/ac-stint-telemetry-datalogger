@@ -21,12 +21,11 @@ try:
 except Exception as e:
     ac.log("Stint ERROR: 'radar.py' not found: " + str(e))
 
+# valores DEFAULT
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 9996
 UPDATE_FREQ = 20 # 20Hz
-SLOW_FREQ = 2.0 # 2s
-PACKET_TYPE = 2
-PACKET_TYPE_S = 3
+UPDATE_SLOW_FREQ = 5 # 5s
 
 sock = None
 radar_sys = None
@@ -35,15 +34,21 @@ lbl_status = 0
 timer_fast = 0
 timer_slow = 0
 period_fast = 1.0 / float(UPDATE_FREQ)
-period_slow = SLOW_FREQ
+period_slow = UPDATE_SLOW_FREQ
+
+PACKET_TYPE = 2
+PACKET_TYPE_S = 3
 
 DRIVER_NAME = "Driver"
 CAR_MODEL = "UNKNOWN"
 TEAM_ID = "DMG"
 
+RADAR_RANGE = 40.0 # 40m
+
 def load_config():
 
-    global SERVER_IP, SERVER_PORT, UPDATE_FREQ, TEAM_ID, period_fast, period_slow
+    global SERVER_IP, SERVER_PORT, UPDATE_FREQ, UPDATE_SLOW_FREQ, TEAM_ID, period_fast, period_slow
+    global RADAR_RANGE
 
     try:
         config = configparser.ConfigParser()
@@ -51,14 +56,38 @@ def load_config():
         config.read(config_path)
 
         if config.has_section("SETTINGS"):
-            SERVER_IP = config.get("SETTINGS", "SERVER_IP", fallback="127.0.0.1")
-            SERVER_PORT = config.getint("SETTINGS", "SERVER_PORT", fallback=9996)
-            UPDATE_FREQ = config.getint("SETTINGS", "UPDATE_FREQ", fallback=20)
-        if config.has_section("DRIVER"):
-            TEAM_ID = config.get("DRIVER", "TEAM_ID", fallback="DMG")
+            val = config.get("SETTINGS", "SERVER_IP", fallback="").strip()
+            if val:
+                SERVER_IP = val
+            
+            val = config.get("SETTINGS", "SERVER_PORT", fallback="").strip()
+            if val:
+                SERVER_PORT = int(val)
+            
+            val = config.get("SETTINGS", "UPDATE_FREQ", fallback="").strip()
+            if val:
+                UPDATE_FREQ = int(val)
+
+            val = config.get("SETTINGS", "UPDATE_SLOW_FREQ", fallback="").strip()
+            if val:
+                UPDATE_SLOW_FREQ = float(val)
         
-        if UPDATE_FREQ <= 0: UPDATE_FREQ = 20
+        if config.has_section("DRIVER"):
+            val = config.get("DRIVER", "TEAM_ID", fallback="").strip()
+            if val:
+                TEAM_ID = val
+
+        if config.has_section("SENSORS"):
+            val = config.get("SENSORS", "RADAR_RANGE", fallback="").strip()
+            if val:
+                RADAR_RANGE = float(val)
+        
+        UPDATE_FREQ = int(max(1, min(UPDATE_FREQ, 60)))
+        UPDATE_SLOW_FREQ = max(0.5, min(UPDATE_SLOW_FREQ, 60.0))
         period_fast = 1.0 / float(UPDATE_FREQ)
+        period_slow = UPDATE_SLOW_FREQ
+
+        RADAR_RANGE = max(5.0, min(RADAR_RANGE, 200.0))
 
     except Exception as e:
         ac.log("Stint ERROR: config.ini: " + str(e))
@@ -167,11 +196,12 @@ def send_handshake():
 def acMain(ac_version):
 
     global sock, lbl_status, radar_sys, DRIVER_NAME, CAR_MODEL
+    global RADAR_RANGE
     
     load_config()
 
     try:
-        radar_sys = RadarSystem(radar_range=40.0)
+        radar_sys = RadarSystem(radar_range=RADAR_RANGE)
         radar_sys.scan_grid()
         
     except:
@@ -190,7 +220,7 @@ def acMain(ac_version):
     DRIVER_NAME = ac.getDriverName(0)
     CAR_MODEL = ac.getCarName(0) or "UNKNOWN"
 
-    ac.log("Stint: READING data")
+    ac.log("Stint sending telemetry data")
 
     return "Stint"
 
