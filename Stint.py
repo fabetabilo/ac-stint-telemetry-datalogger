@@ -17,6 +17,11 @@ import configparser
 import math
 
 try:
+    from features.sim_info import SimInfo
+except Exception as e:
+    ac.log("StintRC ERROR: 'shared.py' " + str(e))
+
+try:
     from features.radar import RadarSystem
 except Exception as e:
     ac.log("Stint ERROR: 'radar.py' not found: " + str(e))
@@ -28,15 +33,22 @@ UPDATE_FREQ = 20 # 20Hz
 UPDATE_SLOW_FREQ = 5 # 5s
 
 sock = None
+sim_info = None
 radar_sys = None
 
 timer_fast = 0
 timer_slow = 0
+tick = 0
 period_fast = 1.0 / float(UPDATE_FREQ)
 period_slow = UPDATE_SLOW_FREQ
 
 PKT_INFO = 1
-PKT_TELEMETRY = 2
+PKT_INPUT = 2
+PKT_SUSP_GFORCE = 3
+PKT_LIVE_TIMING = 4
+PKT_TYRE = 5
+PKT_AERO = 6
+PKT_GPS_RADAR = 7
 
 DRIVER_NAME = "Driver"
 CAR_MODEL = "UNKNOWN"
@@ -105,21 +117,6 @@ def get_number_from_livery(car_model, skin_name):
         return None
     return None
 
-def get_nose_direction():
-    try:
-        # obtiene vector de direccion local [x, y, z]        
-        vel = ac.getCarState(0, acsys.CS.Velocity) # devuelve vector [x, y, z]
-        speed = ac.getCarState(0, acsys.CS.SpeedKMH)
-        
-        if speed > 5:
-            # math.atan2(x, z) da el angulo en radianes
-            return round(math.atan2(vel[0], vel[2]),2)
-        
-        else:
-            return 0.0 # si estamos quietos = 0 norte
-    except:
-        return 0.0
-
 def send_udp(dict_payload):
 
     global sock, SERVER_IP, SERVER_PORT
@@ -131,92 +128,250 @@ def send_udp(dict_payload):
         except:
             pass
 
-def send_telemetry():
-    
-    global sock, radar_sys
-    
-    try:
-        
-        position = ac.getCarRealTimeLeaderboardPosition(0) + 1
 
+def send_input_data():
+
+    global sim_info
+
+    try:
+        if sim_info is None:
+            return
+        
         rpm = int(ac.getCarState(0, acsys.CS.RPM))
+        turbo = round(ac.getCarState(0, acsys.CS.TurboBoost),2) #kpa
         speed = round(ac.getCarState(0, acsys.CS.SpeedKMH),1)
         gear = ac.getCarState(0, acsys.CS.Gear) - 1
         throttle = round(ac.getCarState(0, acsys.CS.Gas),2)
         brake = round(ac.getCarState(0, acsys.CS.Brake),2)
         steer = round(ac.getCarState(0, acsys.CS.Steer),2)
+        fuel = round(sim_info.physics.fuel,2)
+        kers_charge = round(sim_info.physics.kersCharge,2)
+        kers_input = round(sim_info.physics.kersInput,2)
+
+        payload = {
+            "type": PKT_INPUT,
+            "car": {
+                "rpm": rpm,
+                "turbo": turbo,
+                "speed": speed,
+                "gear": gear,
+                "throttle": throttle,
+                "brake": brake,
+                "steer": steer,
+                "fuel": fuel
+            },
+            "kers": {
+                "charge": kers_charge,
+                "input": kers_input
+            }
+        }
+        send_udp(payload)
+        #ac.log("STINT: " + json.dumps(payload, indent=2))
+    except:
+        pass
+
+def send_susp_gforce_data():
+
+    global sim_info
+
+    try:
+        if sim_info is None:
+            return
+
+        travel = list(sim_info.physics.suspensionTravel) # [FL,FR,RL,RR]
+        g_forces = list(sim_info.physics.accG) # [x,y,z]
+
+        payload = {
+            "type": PKT_SUSP_GFORCE,
+            "data": {
+                "travel": travel,
+                "g": g_forces
+            }
+        }
+        send_udp(payload)
+        
+    except:
+        pass
+
+def send_live_timing_data():
+    
+    global sim_info
+
+    try:
+        if sim_info is None:
+            return
+
+        pos = ac.getCarRealTimeLeaderboardPosition(0) + 1
+        current_lap_ms = ac.getCarState(0, acsys.CS.LapTime)
+        delta = ac.getCarState(0, acsys.CS.PerformanceMeter)
+        sector_idx = sim_info.graphics.currentSectorIndex
+        sector_time = sim_info.graphics.lastSectorTime
+        last_lap_ms = ac.getCarState(0, acsys.CS.LastLap)
+        best_lap_ms = ac.getCarState(0, acsys.CS.BestLap)
+        lap_num  = ac.getCarState(0, acsys.CS.LapCount) + 1
+        in_pit_lane = ac.isCarInPitline(0) == 1
+        flag = sim_info.graphics.flag
+
+        payload = {
+            "type": PKT_LIVE_TIMING,
+            "data": {
+                "pos": pos,
+                "current": current_lap_ms,
+                "delta": delta,
+                "spIdx": sector_idx,
+                "spTime": sector_time,
+                "last": last_lap_ms,
+                "best": best_lap_ms,
+                "num": lap_num,
+                "pit": in_pit_lane,
+                "flag": flag
+            }
+        }
+        send_udp(payload)
+
+    except:
+        pass
+
+def send_tyre_data():
+
+    global sim_info
+
+    try:
+        if sim_info is None:
+            return
+        
+        tyre_compound = ac.getCarTyreCompound(0) or "NC"
+        raw_temps = ac.getCarState(0, acsys.CS.CurrentTyresCoreTemp)
+        raw_pressures = ac.getCarState(0, acsys.CS.DynamicPressure)
+        raw_wear = sim_info.physics.tyreWear
+        raw_dirt = ac.getCarState(0, acsys.CS.TyreDirtyLevel)
+        raw_wheel_s = sim_info.physics.wheelSlip
+
+        temps = list(raw_temps)          # C
+        pressures = list(raw_pressures)   # psi
+        wear = list(raw_wear)              # ~50-100
+        dirt_level = list(raw_dirt)        # 0-5
+        slip = list(raw_wheel_s)
+
+        payload = {
+            "type": PKT_TYRE,
+            "data": {
+                "compound": tyre_compound,
+                "temp": temps,
+                "p": pressures,
+                "w": wear,
+                "dirt": dirt_level,
+                "slip": slip
+            }
+        }
+        send_udp(payload)
+        
+    except:
+        pass
+
+def send_aero_data():
+
+    global sim_info
+
+    try:
+        if sim_info is None:
+            return
 
         drag = round(ac.ext_getDrag(),2)
         downforce = round(ac.ext_getDownforce(2),2) # total (0 = front, 1 = rear, pero da 0)
         cl_front = round(ac.getCarState(0, acsys.AERO.CL_Front),4)
         cl_rear = round(ac.getCarState(0, acsys.AERO.CL_Rear),4)
         cd_aero = round(ac.getCarState(0, acsys.AERO.CD),4)
-        nose_dir = get_nose_direction()
+        ride_height = list(sim_info.physics.rideHeight)
 
+        payload = {
+            "type": PKT_AERO,
+            "data": {
+                "drag": drag,
+                "downforce": downforce,
+                "clFront": cl_front,
+                "clRear": cl_rear,
+                "cdAero": cd_aero,
+                "rh": ride_height
+            }
+        }
+        send_udp(payload)
+        
+    except:
+        pass
+
+def send_gps_radar_data():
+    
+    global radar_sys, sim_info
+
+    try:
+        if sim_info is None:
+            return
+
+        nearby_cars = []
+        nose_dir = sim_info.physics.heading
         pos = ac.getCarState(0, acsys.CS.WorldPosition)
 
         x = round(pos[0],2)
         z = round(pos[2],2)
 
-        nearby_cars = []
-
         if radar_sys:
             nearby_cars = radar_sys.get_nearby_cars(x, z)
-
-        tl_payload = {
-            "type": PKT_TELEMETRY,
-            "car": {
-                "position": position,
-                "rpm": rpm,
-                "speed": speed,
-                "gear": gear,
-                "throttle": throttle,
-                "brake": brake,
-                "steer": steer,
-                "aero": {
-                    "drag": drag,
-                    "downForce": downforce,
-                    "clFront": cl_front,
-                    "clRear": cl_rear,
-                    "cdAero": cd_aero
-                },
-                "gps": {
-                    "noseDir": nose_dir,
-                    "x": x,
-                    "z": z
-                },
-                "radar": nearby_cars
-            }
+        
+        payload = {
+            "type": PKT_GPS_RADAR,
+            "data": {
+                "nose": nose_dir,
+                "x": x,
+                "z": z
+            },
+            "radar": nearby_cars
         }
-        # ac.log("STINT: " + json.dumps(tl_payload, indent=2))
-        send_udp(tl_payload)
+        send_udp(payload)
 
-    except Exception as e:
-        ac.log("STINT ERROR: TL " + str(e))
+    except:
+        pass
 
-def send_handshake():
+def send_info():
     
-    global sock, DRIVER_NAME, CAR_MODEL
+    global sim_info, DRIVER_NAME, CAR_MODEL, CAR_NUMBER
     
     try:
+        if sim_info is None:
+            return
+        
+        position_lead = ac.getCarRealTimeLeaderboardPosition(0) + 1
+        tyre_compound = ac.getCarTyreCompound(0) or "NC"
+        in_pit_box = ac.isCarInPit(0) == 1
+
         s_payload = {
             "type": PKT_INFO,
             "num": CAR_NUMBER,
             "driver": DRIVER_NAME,
             "teamId": TEAM_ID,
-            "car": CAR_MODEL
+            "car": CAR_MODEL,
+            "data": {
+                "position": position_lead,
+                "compound": tyre_compound,
+                "box": in_pit_box
+            }
         }
         send_udp(s_payload)
-            
-    except Exception as e:
-        ac.log("Stint ERROR: HS " + str(e))
+
+    except:
+        pass
 
 def acMain(ac_version):
 
     global sock, lbl_status, radar_sys, DRIVER_NAME, CAR_MODEL, CAR_NUMBER
-    global RADAR_RANGE
+    global sim_info, RADAR_RANGE
     
     load_config()
+
+    try:
+        sim_info = SimInfo()
+    except:
+        ac.log("Stint ERROR: Reading sim info")
 
     try:
         radar_sys = RadarSystem(radar_range=RADAR_RANGE)
@@ -245,16 +400,30 @@ def acMain(ac_version):
 
 def acUpdate(deltaT):
 
-    global timer_fast, timer_slow, period_fast, period_slow
+    global timer_fast, timer_slow, period_fast, period_slow, tick
 
     timer_fast += deltaT
     timer_slow += deltaT
     
     if timer_fast > period_fast:
-        send_telemetry()
+        send_input_data()
+        send_susp_gforce_data()
+
+        rot_idx = tick % 4
+
+        if rot_idx == 0:
+            send_live_timing_data()
+        elif rot_idx == 1:
+            send_gps_radar_data()
+        elif rot_idx == 2:
+            send_tyre_data()
+        elif rot_idx == 4:
+            send_aero_data()
+
+        tick += 1
         timer_fast = 0
         
 
     if timer_slow > period_slow:
-        send_handshake()
+        send_info()
         timer_slow = 0
