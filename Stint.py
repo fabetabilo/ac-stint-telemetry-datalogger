@@ -15,16 +15,12 @@ import socket
 import json
 import configparser
 import struct
+from math import atan2, pi
 
 try:
-    from features.sim_info import SimInfo
+    from modules.sim_info import SimInfo
 except Exception as e:
     ac.log("Stint ERROR: 'sim_info.py' not found: " + str(e))
-
-try:
-    from features.radar import RadarSystem
-except Exception as e:
-    ac.log("Stint ERROR: 'radar.py' not found: " + str(e))
 
 # valores DEFAULT
 SERVER_IP = "127.0.0.1"
@@ -34,7 +30,6 @@ UPDATE_SLOW_FREQ = 5 # 5s
 
 sock = None
 sim_info = None
-radar_sys = None
 
 timer_fast = 0
 timer_slow = 0
@@ -45,20 +40,19 @@ period_slow = UPDATE_SLOW_FREQ
 HEADER_STRUCT = struct.Struct('<BB')
 INFO_STRUCT = struct.Struct('<4s32s20s?6f??')
 INPUT_STRUCT = struct.Struct('<I10f')
-IMU_STRUCT = struct.Struct('<5f')
+IMU_STRUCT = struct.Struct('<7f')
 SUSP_STRUCT = struct.Struct('<16f')
 TIMING_STRUCT = struct.Struct('<BIfBIIIH?B')
 TYRE_STRUCT = struct.Struct('<10s20f')
 AERO_STRUCT = struct.Struct('<7f')
-GPS_BASE_STRUCT = struct.Struct('<3fB')
-RADAR_BLIP_STRUCT = struct.Struct('<B2f')
+GPS_STRUCT = struct.Struct('<3f')
 
 PKT_INFO = 1
 PKT_INPUT = 2
 PKT_IMU = 3
 PKT_SUSP = 4
 PKT_LIVE_TIMING = 5
-PKT_GPS_RADAR = 6
+PKT_GPS = 6
 PKT_TYRE = 7
 PKT_AERO = 8
 
@@ -68,13 +62,9 @@ CAR_MODEL = "UNKNOWN"
 CAR_NUMBER = "0"
 TEAM_ID = "DMG"
 
-RADAR_RANGE = 40.0 # 40m
-MAX_RADAR_CARS = 30
-
 def load_config():
 
     global SERVER_IP, SERVER_PORT, UPDATE_FREQ, UPDATE_SLOW_FREQ, DRIVER_IDX, TEAM_ID, DIV_MID, DIV_SLOW, period_fast, period_slow
-    global RADAR_RANGE
 
     try:
         config = configparser.ConfigParser()
@@ -106,18 +96,11 @@ def load_config():
             val = config.get("DRIVER", "TEAM_ID", fallback="").strip()
             if val:
                 TEAM_ID = val
-
-        if config.has_section("SENSORS"):
-            val = config.get("SENSORS", "RADAR_RANGE", fallback="").strip()
-            if val:
-                RADAR_RANGE = float(val)
         
         UPDATE_FREQ = int(max(1, min(UPDATE_FREQ, 60)))
         UPDATE_SLOW_FREQ = max(0.5, min(UPDATE_SLOW_FREQ, 60.0))
         period_fast = 1.0 / float(UPDATE_FREQ)
         period_slow = UPDATE_SLOW_FREQ
-
-        RADAR_RANGE = max(5.0, min(RADAR_RANGE, 200.0))
 
         # logica de sincronizacion
         if UPDATE_FREQ >= 60:
@@ -215,15 +198,21 @@ def send_imu_data():
         ag = sim_info.physics.accG
         r = sim_info.physics.roll
         p = sim_info.physics.pitch
+        agv = ac.getCarState(0, acsys.CS.LocalAngularVelocity)
+        yawr = agv[1] # yaw_rate: rad/s
+        vel = ac.getCarState(0, acsys.CS.LocalVelocity) # [x,y,z]
+        sl = atan2(vel[0], vel[2]) # side_slip: rad  - derivado, de uso referencial
 
         packet_body = IMU_STRUCT.pack(
             ag[0], ag[1], ag[2], # X, Y, Z
             r,
-            p
+            p,
+            yawr,
+            sl
         )
 
         send_udp(PKT_IMU, packet_body)
-        
+
     except:
         pass
 
@@ -323,12 +312,7 @@ def send_tyre_data():
 
 def send_aero_data():
 
-    global sim_info
-
     try:
-        if sim_info is None:
-            return
-
         drag = ac.ext_getDrag()
         downforce = ac.ext_getDownforce(2) # total (0 = front, 1 = rear, pero da 0)
         cl_front = ac.getCarState(0, acsys.AERO.CL_Front)
@@ -349,9 +333,9 @@ def send_aero_data():
     except:
         pass
 
-def send_gps_radar_data():
+def send_gps_data():
     
-    global radar_sys, sim_info
+    global sim_info
 
     try:
         if sim_info is None:
@@ -363,29 +347,13 @@ def send_gps_radar_data():
         x = round(pos[0],2)
         z = round(pos[2],2)
 
-        nearby_cars = []
-        if radar_sys:
-            nearby_cars = radar_sys.get_nearby_cars(x, z, limit=MAX_RADAR_CARS)
-
-        car_count = len(nearby_cars)
-        packet_body = GPS_BASE_STRUCT.pack(
+        packet_body = GPS_STRUCT.pack(
             nose_dir,
             x,
-            z,
-            car_count
+            z
         )
 
-        for car in nearby_cars:
-            c_id = int(car.get('id', 0))
-            c_x = float(car.get('x', 0.0))
-            c_z = float(car.get('z', 0.0))
-            packet_body += RADAR_BLIP_STRUCT.pack(
-                c_id,
-                c_x,
-                c_z
-                )
-            
-        send_udp(PKT_GPS_RADAR, packet_body)
+        send_udp(PKT_GPS, packet_body)
 
     except:
         pass
@@ -425,7 +393,7 @@ def send_info():
 
 def acMain(ac_version):
 
-    global sock, lbl_status, radar_sys, DRIVER_NAME, CAR_MODEL, CAR_NUMBER
+    global sock, lbl_status, DRIVER_NAME, CAR_MODEL, CAR_NUMBER
     global sim_info
     
     load_config()
@@ -434,13 +402,6 @@ def acMain(ac_version):
         sim_info = SimInfo()
     except:
         ac.log("Stint ERROR: Reading sim info")
-
-    try:
-        radar_sys = RadarSystem(radar_range=RADAR_RANGE)
-        radar_sys.scan_grid()
-        
-    except:
-        ac.log("Stint ERROR: Initializing Radar system")
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -475,7 +436,7 @@ def acUpdate(deltaT):
         if tick % DIV_MID == 0:
             send_live_timing_data()
         elif tick % DIV_MID == 1:
-            send_gps_radar_data()
+            send_gps_data()
 
         slow_cycle = tick % DIV_SLOW
         
