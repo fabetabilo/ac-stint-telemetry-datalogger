@@ -15,7 +15,8 @@ import socket
 import json
 import configparser
 import struct
-from math import atan2, pi
+import time
+from math import atan2
 
 try:
     from modules.sim_info import SimInfo
@@ -37,7 +38,7 @@ tick = 0
 period_fast = 1.0 / float(UPDATE_FREQ)
 period_slow = UPDATE_SLOW_FREQ
 
-HEADER_STRUCT = struct.Struct('<BB')
+HEADER_STRUCT = struct.Struct('<BBQ')
 INFO_STRUCT = struct.Struct('<4s32s20s?6f??')
 INPUT_STRUCT = struct.Struct('<I10f')
 IMU_STRUCT = struct.Struct('<7f')
@@ -56,7 +57,7 @@ PKT_GPS = 6
 PKT_TYRE = 7
 PKT_AERO = 8
 
-DRIVER_IDX = 1
+DEVICE_ID = 1
 DRIVER_NAME = "Driver"
 CAR_MODEL = "UNKNOWN"
 CAR_NUMBER = "0"
@@ -64,7 +65,7 @@ TEAM_ID = "DMG"
 
 def load_config():
 
-    global SERVER_IP, SERVER_PORT, UPDATE_FREQ, UPDATE_SLOW_FREQ, DRIVER_IDX, TEAM_ID, DIV_MID, DIV_SLOW, period_fast, period_slow
+    global SERVER_IP, SERVER_PORT, UPDATE_FREQ, UPDATE_SLOW_FREQ, DEVICE_ID, TEAM_ID, DIV_MID, DIV_SLOW, period_fast, period_slow
 
     try:
         config = configparser.ConfigParser()
@@ -89,9 +90,9 @@ def load_config():
                 UPDATE_SLOW_FREQ = float(val)
         
         if config.has_section("DRIVER"):
-            val = config.get("DRIVER", "DRIVER_IDX", fallback="").strip()
+            val = config.get("DRIVER", "DEVICE_ID", fallback="").strip()
             if val:
-                DRIVER_IDX = int(val)
+                DEVICE_ID = int(val)
 
             val = config.get("DRIVER", "TEAM_ID", fallback="").strip()
             if val:
@@ -135,13 +136,15 @@ def get_number_from_livery(car_model, skin_name):
         return None
     return None
 
-def send_udp(pkt_id, binary_body):
+def send_udp_pkt(pkt_id, binary_body):
 
-    global sock, SERVER_IP, SERVER_PORT, DRIVER_IDX
+    global sock, SERVER_IP, SERVER_PORT, DEVICE_ID
 
     if sock:
         try:
-            head = HEADER_STRUCT.pack(pkt_id, DRIVER_IDX)
+            timestamp = int(time.time() * 1000000)
+
+            head = HEADER_STRUCT.pack(pkt_id, DEVICE_ID, timestamp)
             msg = head + binary_body
             sock.sendto(msg, (SERVER_IP, SERVER_PORT))
         except:
@@ -182,7 +185,7 @@ def send_input_data():
             kers_input
         )
 
-        send_udp(PKT_INPUT, packet_body)
+        send_udp_pkt(PKT_INPUT, packet_body)
         
     except:
         pass
@@ -211,7 +214,7 @@ def send_imu_data():
             sl
         )
 
-        send_udp(PKT_IMU, packet_body)
+        send_udp_pkt(PKT_IMU, packet_body)
 
     except:
         pass
@@ -237,7 +240,7 @@ def send_suspension_data():
             w_asp[0], w_asp[1], w_asp[2], w_asp[3]
         )
 
-        send_udp(PKT_SUSP, packet_body)
+        send_udp_pkt(PKT_SUSP, packet_body)
         
     except:
         pass
@@ -274,7 +277,7 @@ def send_live_timing_data():
             flag
         )
 
-        send_udp(PKT_LIVE_TIMING, packet_body)
+        send_udp_pkt(PKT_LIVE_TIMING, packet_body)
 
     except:
         pass
@@ -305,7 +308,7 @@ def send_tyre_data():
             slip[0], slip[1], slip[2], slip[3]
         )
 
-        send_udp(PKT_TYRE, packet_body)
+        send_udp_pkt(PKT_TYRE, packet_body)
         
     except:
         pass
@@ -328,7 +331,7 @@ def send_aero_data():
             *sim_info.physics.rideHeight
         )
 
-        send_udp(PKT_AERO, packet_body)
+        send_udp_pkt(PKT_AERO, packet_body)
         
     except:
         pass
@@ -353,7 +356,7 @@ def send_gps_data():
             z
         )
 
-        send_udp(PKT_GPS, packet_body)
+        send_udp_pkt(PKT_GPS, packet_body)
 
     except:
         pass
@@ -386,7 +389,7 @@ def send_info():
             abs_on
         )
 
-        send_udp(PKT_INFO, packet_body)
+        send_udp_pkt(PKT_INFO, packet_body)
 
     except:
         pass
